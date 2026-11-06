@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>dsh-longsession harness</title>
+  <style>
+    body { font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; margin: 16px; }
+    #scrollport { height: 320px; overflow-y: auto; border: 1px solid #c8c8c8; }
+    [data-chat-flow-key] { height: 40px; background: #f4f4f4; margin: 2px 0; }
+    [data-chat-flow-key]:nth-child(even) { background: #eaeaea; }
+    #out { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="scrollport" data-conversation-scroll data-conversation-region="chat" data-conversation-session="session-test">
+    <div id="column">
+      <div id="flow" data-slot="conversation.chat.flow" style="display:contents"></div>
+    </div>
+  </div>
+  <pre id="out"></pre>
+  <script>
+    window.__ModuleLoader__ = {
+      load: function (entry) { window.__ENTRY__ = entry },
+    }
+    // Transport stubs installed BEFORE the client bundle patches them.
+    window.__WS_SENT__ = []
+    window.FakeWebSocket = function () {}
+    window.FakeWebSocket.prototype.send = function (data) { window.__WS_SENT__.push(data) }
+    window.WebSocket = window.FakeWebSocket
+    window.__FETCH_SENT__ = []
+    window.__ORIGINAL_FETCH__ = function (input, init) {
+      window.__FETCH_SENT__.push({ url: String(input), body: init && init.body })
+      return Promise.resolve({
+        ok: true,
+        headers: { get: function () { return null } },
+        json: function () { return Promise.resolve({}) },
+      })
+    }
+    window.fetch = window.__ORIGINAL_FETCH__
+  </script>
+  <script src="/client.js"></script>
+  <script>
+    (function () {
+      var results = []
+      function assert(name, ok, detail) {
+        results.push({ name: name, pass: !!ok, detail: detail === undefined ? '' : String(detail) })
+      }
+      function wait(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms) }) }
+      function scrollport() { return document.getElementById('scrollport') }
+      function build(count, withTurns) {
+        if (withTurns === undefined) withTurns = true
+        var flow = document.getElementById('flow')
+        flow.textContent = ''
+        for (var index = 0; index < count; index++) {
+          var row = document.createElement('div')
+          row.setAttribute('data-chat-flow-key', 'row-' + String(index))
+          row.setAttribute('data-chat-flow-kind', 'assistant-step')
+          if (withTurns) row.setAttribute('data-chat-turn', String(Math.floor(index / 50) + 1))
+          row.textContent = 'row ' + String(index)
+          flow.appendChild(row)
+        }
+      }
+      function resyncCalls() { return window.__RESYNC_CALLS__ || 0 }
+      function fakeReact() {
+        return {
+          createElement: function () { return null },
+          memo: function (component) { return component },
+          useState: function (initial) { return [initial, function () {}] },
+          useEffect: function () {},
+        }
+      }
+      function start(entry, config) {
+        var api = entry.factory(function (id) {
+          if (id === 'react') return fakeReact()
+          return {}
+        })
+        var fakeFace = {
+          running: false,
+          hasMore: true,
+          turnCursor: 2,
+          resync: function () {
+            window.__RESYNC_CALLS__ = resyncCalls() + 1
+            if (window.__FAKE_RESYNC_NOOP__ === true) return Promise.resolve()
+            var flow = document.getElementById('flow')
+            flow.textContent = ''
+            for (var turn = 1; turn <= 2; turn++) {
+              for (var index = 0; index < 5; index++) {
+                var row = document.createElement('div')
+                row.setAttribute('data-chat-flow-key', 'compacted-' + turn + '-' + index)
+                row.setAttribute('data-chat-flow-kind', 'assistant-step')
+                row.setAttribute('data-chat-turn', String(turn))
+                row.textContent = 'compacted ' + turn + ' ' + index
+                flow.appendChild(row)
+              }
+            }
+            fakeFace.turnCursor = 2
+            return Promise.resolve()
+          },
+          loadOlder: function () {
+            window.__LOAD_OLDER_CALLS__ = (window.__LOAD_OLDER_CALLS__ || 0) + 1
+            var flow = document.getElementById('flow')
+            var first = fakeFace.turnCursor + 1
+            fakeFace.turnCursor += 2
+            for (var turn = first; turn <= first + 1; turn++) {
+              for (var index = 0; index < 5; index++) {
+                var row = document.createElement('div')
+                row.setAttribute('data-chat-flow-key', 'restored-' + turn + '-' + index)
+                row.setAttribute('data-chat-flow-kind', 'assistant-step')
+                row.setAttribute('data-chat-turn', String(turn))
+                row.textContent = 'restored ' + turn + ' ' + index
+                flow.appendChild(row)
+              }
+            }
+            return Promise.resolve()
+          },
+        }
+        var fakeSessions = {
+          manager: {
+            get: function (id) { return id === 'session-test' ? fakeFace : undefined },
+          },
+        }
+        var fakeSlots = {
+          lastDisposer: null,
+          inject: function (name, generator) {
+            window.__SLOT_NAMES__ = window.__SLOT_NAMES__ || []
+            window.__SLOT_NAMES__.push(name)
+            var iterator = generator()
+            var step = iterator.next()
+            while (!step.done) {
+              step = iterator.next(fakeSlots.lastDisposer)
+            }
+          },
+          register: function (definition, component) {
+            window.__SLOT_DEFS__ = window.__SLOT_DEFS__ || []
+            window.__SLOT_DEFS__.push(definition)
+            window.__SLOT_COMPONENTS__ = window.__SLOT_COMPONENTS__ || []
+            window.__SLOT_COMPONENTS__.push(component)
+            fakeSlots.lastDisposer = function () { window.__DISPOSED_COUNT__ = (window.__DISPOSED_COUNT__ || 0) + 1 }
+            return fakeSlots.lastDisposer
+          },
+        }
+        var ctx = {
+          effect: function (fn) { window.__DISPOSER__ = fn },
+          inject: function (deps, callback) {
+            if (deps.indexOf('sessions') >= 0) callback({ sessions: fakeSessions })
+            if (deps.indexOf('slots') >= 0) callback({ slots: fakeSlots })
+          },
+        }
+        api.apply(ctx, config || {})
+        return api
+      }
+      function followFrame(maxMessages, minMessages, minTurns, sessionId) {
+        return JSON.stringify({
+          type: 'open',
+          streamId: 'stream-1',
+          endpoint: 'session/follow',
+          payload: {
+            args: {
+              request: {
+                address: { kind: 'session', sessionId: sessionId || 'session-test' },
+                activate: true,
+                assistantStream: true,
+                maxMessages: maxMessages,
+                turnWindow: { minMessages: minMessages, minTurns: minTurns },
+              },
+            },
+          },
+        })
+      }
+      var RPC_PAGE_BODY = JSON.stringify({
+        type: 'client-request',
+        rpcId: 'rpc-1',
+        method: 'session/page',
+        payload: { args: { address: { kind: 'session', sessionId: 'session-test' }, beforeSeq: 100, maxMessages: 500, turnWindow: { minMessages: 50, minTurns: 2 } } },
+      })
+
+      async function main() {
+        try {
+          for (var storage of [window.sessionStorage, window.localStorage]) {
+            var keys = []
+            for (var i = 0; i < storage.length; i++) keys.push(storage.key(i))
+            keys.filter(function (key) { return key && key.indexOf('dsh-longsession') === 0 }).forEach(function (key) { storage.removeItem(key) })
+          }
+        } catch (error) {
+          /* storage unavailable in some test contexts */
+        }
+        var entry = window.__ENTRY__
+        assert('registers lazy-CJS factory', entry && entry.id === 'dsh-longsession')
+        assert('exposes apply', entry && typeof entry.factory === 'function')
+
+        build(300)
+        scrollport().scrollTop = scrollport().scrollHeight
+        var api = start(entry, { historyMaxMessages: 200, historyMinTurns: 0, trimMinRows: 120, autoTrimRows: 0 })
+        await wait(300)
+        var probe = window.__DSH_LONGSESSION__.probe()
+        assert('scans transcript rows', probe.rows === 300, JSON.stringify(probe))
+        assert('finds the Session service', probe.trimAvailable === true, JSON.stringify(probe))
+        assert('registers the session header slot', Array.isArray(window.__SLOT_NAMES__) && window.__SLOT_NAMES__.includes('conversation.session.header.actions'), JSON.stringify(window.__SLOT_NAMES__))
+        var headerDef = (window.__SLOT_DEFS__ || []).find(function (d) { return d.name === 'conversation.session.header.actions' })
+        assert('header entry identity', headerDef && headerDef.id === 'longsession' && headerDef.order === 5, JSON.stringify(headerDef))
+        var settingsDef = (window.__SLOT_DEFS__ || []).find(function (d) { return d.name === 'settings.section' })
+        assert('registers the settings section', Array.isArray(window.__SLOT_NAMES__) && window.__SLOT_NAMES__.includes('settings.section'), JSON.stringify(window.__SLOT_NAMES__))
+        assert('settings entry identity', settingsDef && settingsDef.id === 'longsession' && settingsDef.order === 20 && typeof settingsDef.label === 'function', JSON.stringify(settingsDef))
+        assert('slot entries have components', (window.__SLOT_COMPONENTS__ || []).length >= 2 && window.__SLOT_COMPONENTS__.every(function (c) { return typeof c === 'function' }))
+        assert('probe reports the slots', window.__DSH_LONGSESSION__.probe().headerRegistered === true && window.__DSH_LONGSESSION__.probe().settingsRegistered === true, JSON.stringify(window.__DSH_LONGSESSION__.probe()))
+
+        // A resync that reports success but does not unload rows must not flip the state.
+        window.__FAKE_RESYNC_NOOP__ = true
+        var noopTrim = await window.__DSH_LONGSESSION__.trim()
+        var noopProbe = window.__DSH_LONGSESSION__.probe()
+        assert('rejects a resync that does not unload rows', noopTrim === false && noopProbe.compacted === false && /did not unload/.test(String(noopProbe.lastFailure)), JSON.stringify(noopProbe))
+        window.__FAKE_RESYNC_NOOP__ = false
+
+        // Rows without turn metadata must not be treated as collapsible.
+        build(300, false)
+        await wait(350)
+        var unknownProbe = window.__DSH_LONGSESSION__.probe()
+        assert('detects missing turn metadata', unknownProbe.turnsKnown === false && unknownProbe.turns === 0, JSON.stringify(unknownProbe))
+        var unknownTrim = await window.__DSH_LONGSESSION__.trim()
+        assert('refuses to collapse without turn metadata', unknownTrim === false && window.__DSH_LONGSESSION__.probe().trims === 0, JSON.stringify(window.__DSH_LONGSESSION__.probe()))
+        build(300)
+        await wait(300)
+
+        // A hidden second transcript must not steal the session/root selection.
+        var hiddenRoot = document.createElement('div')
+        hiddenRoot.setAttribute('data-conversation-scroll', '')
+        hiddenRoot.setAttribute('data-conversation-session', 'other-session')
+        hiddenRoot.style.display = 'none'
+        for (var hiddenIndex = 0; hiddenIndex < 40; hiddenIndex++) {
+          var hiddenRow = document.createElement('div')
+          hiddenRow.setAttribute('data-chat-flow-key', 'hidden-' + hiddenIndex)
+          hiddenRow.setAttribute('data-chat-turn', '1')
+          hiddenRoot.appendChild(hiddenRow)
+        }
+        document.body.appendChild(hiddenRoot)
+        await wait(350)
+        var rootProbe = window.__DSH_LONGSESSION__.probe()
+        assert('ignores a hidden transcript root', rootProbe.sessionId === 'session-test' && rootProbe.rows === 300, JSON.stringify(rootProbe))
+        document.body.removeChild(hiddenRoot)
+        await wait(250)
+
+        // Wire clamp: WebSocket session/follow open frame.
+        var socket = new window.WebSocket('ws://example.test/')
+        socket.send(followFrame(500, 50, 2))
+        var sent = JSON.parse(window.__WS_SENT__[window.__WS_SENT__.length - 1])
+        var request = sent.payload.args.request
+        assert('clamps history maxMessages on the wire', request.maxMessages === 200, JSON.stringify(request))
+        assert('keeps minMessages valid under the cap', request.turnWindow.minMessages === 50, JSON.stringify(request.turnWindow))
+        assert('keeps minTurns untouched by default', request.turnWindow.minTurns === 2, JSON.stringify(request.turnWindow))
+
+        // Wire caps are scoped to the active session unless explicitly widened.
+        socket.send(followFrame(500, 50, 2, 'other-session'))
+        var otherSession = JSON.parse(window.__WS_SENT__[window.__WS_SENT__.length - 1]).payload.args.request
+        assert('leaves other sessions untouched by default', otherSession.maxMessages === 500, JSON.stringify(otherSession))
+        window.__DSH_LONGSESSION__.setConfig({ historyMaxMessages: 200, historyMinTurns: 0, trimMinRows: 120, autoTrimRows: 0, historyCapsAllSessions: true })
+        socket.send(followFrame(500, 50, 2, 'other-session'))
+        var allSessions = JSON.parse(window.__WS_SENT__[window.__WS_SENT__.length - 1]).payload.args.request
+        assert('can opt into capping all sessions', allSessions.maxMessages === 200, JSON.stringify(allSessions))
+        window.__DSH_LONGSESSION__.setConfig({ historyMaxMessages: 200, historyMinTurns: 0, trimMinRows: 120, autoTrimRows: 0, historyCapsAllSessions: false })
+        assert('counts the rewrite in the probe', window.__DSH_LONGSESSION__.probe().rewrites >= 1, String(window.__DSH_LONGSESSION__.probe().rewrites))
+
+        // minTurns is opt-in.
+        window.__DSH_LONGSESSION__.setConfig({ historyMaxMessages: 200, historyMinTurns: 1, trimMinRows: 120, autoTrimRows: 0 })
+        socket.send(followFrame(500, 50, 2))
+        var tuned = JSON.parse(window.__WS_SENT__[window.__WS_SENT__.length - 1]).payload.args.request
+        assert('applies opt-in minTurns cap', tuned.turnWindow.minTurns === 1, JSON.stringify(tuned))
+        assert('keeps the maxMessages cap together', tuned.maxMessages === 200, JSON.stringify(tuned))
+
+        // Unrelated frames pass through untouched.
+        socket.send(JSON.stringify({ type: 'open', endpoint: 'job/list', payload: { args: { request: { sessionId: 'session-test' } } } }))
+        assert('leaves unrelated frames byte-identical', window.__WS_SENT__[window.__WS_SENT__.length - 1].indexOf('job/list') !== -1)
+
+        // Disabled passes through.
+        window.__DSH_LONGSESSION__.setConfig({ historyMaxMessages: 200, historyMinTurns: 0, trimMinRows: 120, autoTrimRows: 0, enabled: false })
+        socket.send(followFrame(500, 50, 2))
+        assert('disabled plugin passes frames through', JSON.parse(window.__WS_SENT__[window.__WS_SENT__.length - 1]).payload.args.request.maxMessages === 500)
+        window.__DSH_LONGSESSION__.setConfig({ historyMaxMessages: 200, historyMinTurns: 0, trimMinRows: 120, autoTrimRows: 0, enabled: true })
+
+        // Unary page RPC clamp.
+        await window.fetch('api/session/page', { method: 'POST', headers: { 'content-type': 'application/json' }, body: RPC_PAGE_BODY })
+        var rpc = JSON.parse(window.__FETCH_SENT__[window.__FETCH_SENT__.length - 1].body)
+        assert('clamps the unary page RPC too', rpc.payload.args.maxMessages === 200, JSON.stringify(rpc.payload.args))
+
+        // Auto-compaction when the reader is at the tail and the window is large.
+        window.__DSH_LONGSESSION__.setConfig({ historyMaxMessages: 200, historyMinTurns: 0, trimMinRows: 120, autoTrimRows: 150 })
+        var callsBeforeAuto = resyncCalls()
+        build(300)
+        scrollport().scrollTop = scrollport().scrollHeight
+        await wait(800)
+        assert('auto compacts an oversized window at the tail', resyncCalls() > callsBeforeAuto, 'calls=' + resyncCalls())
+        assert('records the auto reason', window.__DSH_LONGSESSION__.probe().lastTrimReason === 'auto', window.__DSH_LONGSESSION__.probe().lastTrimReason)
+        assert('auto compaction marks the page compacted', window.__DSH_LONGSESSION__.probe().compacted === true)
+
+        // Restore reloads the saved window through loadOlder(), then turns auto-compaction
+        // off for the rest of this session.
+        window.__DSH_LONGSESSION__.restore()
+        await wait(1400)
+        var restoredProbe = window.__DSH_LONGSESSION__.probe()
+        assert('restore reloads pages', (window.__LOAD_OLDER_CALLS__ || 0) > 0, 'calls=' + window.__LOAD_OLDER_CALLS__)
+        assert('restore clears the compacted state', restoredProbe.compacted === false, JSON.stringify(restoredProbe))
+        assert('restore returns to the saved turn count', restoredProbe.turns >= 6, JSON.stringify(restoredProbe))
+        assert('restore disables auto-compaction for the session', restoredProbe.autoTrimDisabled === true, JSON.stringify(restoredProbe))
+
+        // Even a large, tail-anchored window no longer auto-compacts after the restore.
+        var callsAfterRestore = resyncCalls()
+        build(300)
+        scrollport().scrollTop = scrollport().scrollHeight
+        await wait(800)
+        assert('auto compaction stays off after a restore', resyncCalls() === callsAfterRestore, 'calls=' + resyncCalls())
+
+        // Manual compaction still works while auto-compaction is off.
+        var beforeManual = window.__DSH_LONGSESSION__.probe()
+        window.__DSH_LONGSESSION__.trim()
+        await wait(350)
+        assert('manual compact still works with auto-compaction off', resyncCalls() > callsAfterRestore, 'calls=' + resyncCalls())
+        assert('manual compact is counted', window.__DSH_LONGSESSION__.probe().trims === beforeManual.trims + 1)
+        assert('manual compact marks the page compacted', window.__DSH_LONGSESSION__.probe().compacted === true)
+        var autoReenabled = window.__DSH_LONGSESSION__.enableAutoTrim()
+        await wait(100)
+        assert('can re-enable auto-collapse for the session', autoReenabled === true && window.__DSH_LONGSESSION__.probe().autoTrimDisabled === false && window.__DSH_LONGSESSION__.probe().compacted === true, JSON.stringify(window.__DSH_LONGSESSION__.probe()))
+
+        // Small transcripts keep the dock hidden (component returns null).
+        build(5)
+        await wait(400)
+        var small = window.__DSH_LONGSESSION__.probe()
+        assert('counts a small transcript', small.rows === 5, JSON.stringify(small))
+
+        // Subscribers fire on state changes.
+        var fired = 0
+        var unsubscribe = window.__DSH_LONGSESSION__.subscribe(function () { fired++ })
+        window.__DSH_LONGSESSION__.refresh()
+        await wait(100)
+        unsubscribe()
+        assert('subscribers receive state changes', fired > 0, 'fired=' + fired)
+
+        // Dispose leaves no registration, clears the global, stops rewriting.
+        var disposeApi = window.__DSH_LONGSESSION__
+        disposeApi.dispose()
+        await wait(80)
+        assert('dispose disposes both slot registrations', (window.__DISPOSED_COUNT__ || 0) >= 2, String(window.__DISPOSED_COUNT__))
+        assert('dispose clears the global', typeof window.__DSH_LONGSESSION__ === 'undefined')
+        socket.send(followFrame(500, 50, 2))
+        assert('disposed plugin stops rewriting', JSON.parse(window.__WS_SENT__[window.__WS_SENT__.length - 1]).payload.args.request.maxMessages === 500)
+        if (typeof window.__DISPOSER__ === 'function') {
+          window.__DISPOSER__()
+          assert('ctx effect disposer is idempotent', typeof window.__DSH_LONGSESSION__ === 'undefined')
+        }
+
+        var failed = results.filter(function (row) { return !row.pass })
+        window.__TEST_RESULTS__ = { total: results.length, failed: failed.length, results: results }
+        document.getElementById('out').textContent = results.map(function (row) {
+          return (row.pass ? 'PASS ' : 'FAIL ') + row.name + (row.detail ? '  [' + row.detail + ']' : '')
+        }).join('\n') + '\n\n' + (failed.length === 0 ? 'ALL PASS' : failed.length + ' FAILED')
+      }
+
+      main().catch(function (error) {
+        window.__TEST_RESULTS__ = { total: 1, failed: 1, results: [{ name: 'harness threw', pass: false, detail: String(error && error.stack || error) }] }
+        document.getElementById('out').textContent = 'HARNESS ERROR\n' + String(error && error.stack || error)
+      })
+    })()
+  </script>
+</body>
+</html>

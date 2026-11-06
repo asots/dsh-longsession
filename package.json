@@ -1,0 +1,61 @@
+{
+  "name": "dsh-longsession",
+  "version": "0.0.1",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web"
+    },
+    "engines": {
+      "dsh": ">=0.2.0"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek",
+    "harness",
+    "performance",
+    "long-session"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/asots/dsh-longsession.git"
+  },
+  "homepage": "https://github.com/asots/dsh-longsession#readme",
+  "bugs": {
+    "url": "https://github.com/asots/dsh-longsession/issues"
+  },
+  "files": [
+    "lib",
+    "test",
+    "assets",
+    "cordis.patch.yml",
+    "screenshots.json",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "description": "Long-session performance companion for DeepSeek Harness: bounded history window, compact-page toggle with session-scoped auto-compaction, settings page, optional wire caps."
+}
+
+
+
+
+
+
+
